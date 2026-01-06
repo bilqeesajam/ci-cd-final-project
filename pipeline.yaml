@@ -1,0 +1,93 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: ci-cd-pipeline
+spec:
+  workspaces:
+    - name: source
+  params:
+    - name: repo-url
+      type: string
+      description: The git repository URL
+      default: "https://github.com/bilqeesajam/ci-cd-final-project.git"
+    - name: branch
+      type: string
+      description: The git branch
+      default: "main"
+    - name: app-name
+      type: string
+      description: Application name
+      default: "counter-app"
+    - name: build-image
+      type: string
+      description: Built image name
+      default: "image-registry.openshift-image-registry.svc:5000/sn-labs-ajambilqees/counter-app:latest"
+  tasks:
+    - name: cleanup-workspace
+      taskRef:
+        name: cleanup
+      workspaces:
+        - name: source
+          workspace: source
+    
+    - name: fetch-source-code
+      taskRef:
+        kind: ClusterTask
+        name: git-clone
+      runAfter:
+        - cleanup-workspace
+      workspaces:
+        - name: output
+          workspace: source
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.branch)
+        - name: deleteExisting
+          value: "true"
+    
+    - name: lint-code
+      taskRef:
+        name: eslint
+      runAfter:
+        - fetch-source-code
+      workspaces:
+        - name: source
+          workspace: source
+    
+    - name: run-tests
+      taskRef:
+        name: jest-test
+      runAfter:
+        - fetch-source-code
+      workspaces:
+        - name: source
+          workspace: source
+    
+    - name: build-image
+      taskRef:
+        kind: ClusterTask
+        name: buildah
+      runAfter:
+        - lint-code
+        - run-tests
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: IMAGE
+          value: $(params.build-image)
+    
+    - name: deploy-to-openshift
+      taskRef:
+        kind: ClusterTask
+        name: openshift-client
+      runAfter:
+        - build-image
+      params:
+        - name: SCRIPT
+          value: |
+            oc create deployment $(params.app-name) --image=$(params.build-image) --dry-run=client -o yaml | oc apply -f -
+            oc expose deployment/$(params.app-name) --port=8080
+            oc rollout status deployment/$(params.app-name)
